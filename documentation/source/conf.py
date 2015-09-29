@@ -37,11 +37,28 @@ extensions = [
     'sphinx.ext.ifconfig',
     'sphinx.ext.autosummary',
     'sphinxcontrib.matlab',
-    'sphinxcontrib.napoleon',
+    'sphinx.ext.napoleon',
 ]
 
+# Napoleon settings
+napoleon_google_docstring = True
+napoleon_numpy_docstring = True
+napoleon_include_private_with_doc = False
+napoleon_include_special_with_doc = True
+napoleon_use_admonition_for_examples = False
+napoleon_use_admonition_for_notes = False
+napoleon_use_admonition_for_references = False
+napoleon_use_ivar = False
+napoleon_use_param = True
+napoleon_use_rtype = False
+
 # Matlab related directives
-matlab_src_dir = '/Users/optas/Documents/Git_Repos/FmapLib/src/'
+try:
+  if os.environ['USER'] == 'optas' :
+    matlab_src_dir = '/Users/optas/Documents/Git_Repos/FmapLib/src'
+except:
+  matlab_src_dir = 'C:\Users\Etienne\Desktop\GitHubProj\FmapLib\src'
+
 primary_domain = 'mat'
 autoclass_content = 'both'
 autodoc_member_order = 'bysource'
@@ -125,7 +142,7 @@ todo_include_todos = True
 
 # The theme to use for HTML and HTML Help pages.  See the documentation for
 # a list of builtin themes.
-html_theme = 'alabaster'
+html_theme = 'sphinx_rtd_theme'
 
 # Theme options are theme-specific and customize the look and feel of a theme
 # further.  For a list of options available for each theme, see the

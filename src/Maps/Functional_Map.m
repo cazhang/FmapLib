@@ -85,8 +85,11 @@ classdef Functional_Map < dynamicprops
                 case 'frobenius_square'
                     [F] = Functional_Map.sum_of_squared_frobenius_norms(source_feat, target_feat, source_reg, target_reg, options.lambda);
                 case 'frobenius'
-%                     [F] = Functional_Map.sum_of_frobenius_norms(source_feat, target_feat, source_reg, target_reg, options.lambda);
-                      [F] = Functional_Map.sum_of_frobenius_norms_cvx(source_feat, target_feat, source_reg, target_reg, options.lambda);
+                    [F] = Functional_Map.sum_of_frobenius_norms(source_feat, target_feat, source_reg, target_reg, options.lambda);
+%                       [F] = Functional_Map.sum_of_frobenius_norms_cvx(source_feat, target_feat, source_reg, target_reg, options.lambda);
+                case 'l1_and_frobenius'
+                      [F] = Functional_Map.l1_and_frobenius_norms_cvx(source_feat, target_feat, source_reg, target_reg, options.lambda);
+                                
                 case 'frobenius_with_covariance'
                     obj.source_features.project_features(obj.source_basis, neigs_source);
                     C1 = obj.source_features.covariance_matrix();
@@ -424,6 +427,27 @@ classdef Functional_Map < dynamicprops
 
         end
         
+        function [X, val] = l1_and_frobenius_norms_cvx(src_functions, trg_functions, src_spectra, trg_spectra, lambda)
+            % Generating a F-Map by penalizing the function correspondences with the 1-norm and the commutativity with the
+            % Laplacian operator with the frobenius. I.e., 
+            %      X = argmin ||X * src_functions - trg_functions||_1  +  lambda * ||X * src_spectra - trg_spectra * X||_F
+                 
+            [src_size, fs_n]  = size(src_functions);
+            [trg_size, ft_n]  = size(trg_functions);
+            if fs_n ~= ft_n
+                error('Same number of functions characterizing the two spaces must be provided.')
+            end
+            
+            cvx_begin        
+                variables X(trg_size, src_size)
+                minimize norm(X*src_functions - trg_functions, 1) + lambda * norm(X*diag(src_spectra) - diag(trg_spectra)*X, 'fro')
+            cvx_end      
+            val = cvx_optval;               
+        end
+                
+        
+        
+        
         
         function [X] = sum_of_squared_frobenius_norms(D1, D2, L1, L2, lambda)
             % Computes the functional map X that minimizes the following objective: 
@@ -467,14 +491,14 @@ classdef Functional_Map < dynamicprops
             assert(all(size(X) == [N2 N1]))
         end
           
-        function X = sum_of_frobenius_norms(D1, D2, L1, L2, lambda)
-            % Copyright (C) 2014 Fan Wang.            
+        function X = sum_of_frobenius_norms(D1, D2, L1, L2, lambda)            
             % TODO-P: Add documentation.
             % This code uses Sedumi to write the objective function as a
             % Semi-definite program in the dual form. In this problem we
             % aim to minimize ||X*D1-D2|| + lambda*||X*L1-L2*X||. This is
             % done by solving for min t1 + lambda*t2, s.t t1 >=
             % ||X*D1-D2||, t2 >= ||X*L1-L2*X||.
+            % Written by Fan Wang, 2014.
             
             N1 = size(D1, 1);
             N2 = size(D2, 1);
@@ -485,7 +509,7 @@ classdef Functional_Map < dynamicprops
             dim = numel(D2);
             K.q = [1 + dim];
             b   = [z; -1];
-            D2t = sparse(D2');
+            D2t = sparse(D2');                 %TODO-P: sparse should be making this slower here.
             c   = [0; D2t(:)];
             At = [z' -1;
                   kron(speye(N2), D1') sparse(dim, length(K.q))];
@@ -655,6 +679,64 @@ classdef Functional_Map < dynamicprops
             rhs = [ G'; sparse(size(F', 2), size(G', 2)) ];
             X   = (lhs\rhs)';
         end
+        
+        
+        
+        
+        function [X, W, iter_ran] = iteratively_refined_fmap(src_functions, trg_functions, src_spectra, trg_spectra, lambda, varargin)            
+            probe_n = size(src_functions, 2);           % Number of probe functions.
+            
+            options = struct('weights', ones(size(probe_n)), 'max_iter', 100, 'weight_mask', [], 'convergence', 1e-3);
+            options = load_key_value_input_pairs(options, varargin{:});
+            
+            W       = zeros(probe_n, options.max_iter + 1);     % Matrix carrying the tuning weights for every iteration.
+            X       = zeros(size(trg_functions, 1), size(src_functions, 1), options.max_iter);
+            W(:, 1) = options.weights;
+                        
+            for i = 1:options.max_iter
+                wi = (spdiags(W(:, i), 0, probe_n, probe_n));                
+                X(:,:,i) = Functional_Map.sum_of_squared_frobenius_norms(src_functions * wi, trg_functions * wi, src_spectra, trg_spectra, lambda);
+                W(:,i+1) = new_weights(X(:,:,i), src_functions, trg_functions, options.weight_mask);
+                
+                if all( abs(W(:,i) - W(:,i+1)) < options.convergence)                    
+                    fprintf('Converged in iteration: %d\n', i);
+                    break
+                end                                    
+            end
+                        
+            iter_ran = i;
+            X = X(:,:,1:iter_ran);         % Adjust sizes in case of convergence was reached before max_iter runs.            
+            W = W(:,  1:iter_ran+1);
+            
+            fprintf('In the final two iterations, the average difference between the weights was %f.\n', mean(abs(W(:,end) - W(:,end-1))) );
+            
+            function [W] = new_weights(X, src_f, trg_f, weight_mask)
+                delta = 1e-5;  % TODO-P
+                if isempty(weight_mask) || weight_mask == 1;
+                    W = 1 ./ max(delta,  sqrt(sum( (X*src_f - trg_f).^2 ) ) ) ;
+                elseif size(weight_mask,1) == 1 && size(weight_mask, 2) == 1     % Single number.                    
+                    W = sqrt(sum( (X*src_f - trg_f).^2 ) ) ;
+                    m = weight_mask;
+                    aggregate = reshape(W, m, []);
+                    aggregate = mean(aggregate);
+                    aggregate = aggregate ./ norm(aggregate); 
+                    aggregate = repmat(aggregate, m, 1);
+                    W         = reshape(aggregate, size(W));
+                else
+                    error('Not implemented yet.')
+                end
+                    
+                
+            
+            end
+            
+                
+            
+            
+            
+        end
+        
+        
         
                 
     end % Static.
